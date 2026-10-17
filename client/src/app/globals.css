@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-paper text-ink font-body antialiased;
+    background-image: radial-gradient(
+      rgba(30, 27, 46, 0.13) 1.2px,
+      transparent 1.2px
+    );
+    background-size: 22px 22px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display;
+  }
+
+  ::selection {
+    @apply bg-sun text-ink;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-white border-[3px] border-ink rounded-2xl shadow-pop;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 border-[3px] border-ink rounded-xl px-4 py-2 text-sm font-bold text-ink shadow-pop-sm transition-all duration-150 select-none whitespace-nowrap;
+  }
+
+  .btn:hover:not(:disabled) {
+    @apply -translate-x-0.5 -translate-y-0.5 shadow-pop;
+  }
+
+  .btn:active:not(:disabled) {
+    @apply translate-x-0.5 translate-y-0.5 shadow-none;
+  }
+
+  .btn:disabled {
+    @apply opacity-50 cursor-not-allowed;
+  }
+
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs rounded-lg;
+  }
+
+  .btn-icon {
+    @apply p-2;
+  }
+
+  .field {
+    @apply w-full bg-white border-[3px] border-ink rounded-xl px-3.5 py-2.5 text-sm font-medium text-ink placeholder:text-ink/40 outline-none transition-all duration-150 focus:-translate-x-0.5 focus:-translate-y-0.5 focus:shadow-pop-sm;
+  }
+
+  .label {
+    @apply block text-[11px] font-bold uppercase tracking-wider text-ink/70 mb-1.5;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full border-2 border-ink text-ink whitespace-nowrap;
+  }
+
+  .modal-backdrop {
+    @apply fixed inset-0 z-50 flex items-center justify-center p-4 bg-ink/40 backdrop-blur-[2px];
+  }
+
+  .modal {
+    @apply w-full bg-white border-[3px] border-ink rounded-3xl shadow-pop-lg p-6 space-y-4 animate-pop-in;
+  }
+
+  .tab {
+    @apply inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl border-2 border-transparent text-xs font-bold text-ink/60 transition-all duration-150 hover:text-ink hover:border-ink;
+  }
+
+  .tab-active {
+    @apply border-ink bg-white text-ink shadow-pop-sm;
+  }
+
+  .select-card {
+    @apply w-full text-left p-3.5 rounded-2xl border-[3px] border-transparent transition-all duration-150;
+  }
+
+  .select-card:not(.select-card-active):hover {
+    @apply border-ink/25 bg-paper;
+  }
+
+  .select-card-active {
+    @apply border-ink bg-white shadow-pop-sm -translate-x-px -translate-y-px;
+  }
+
+  .sidebar-band {
+    @apply p-4 border-b-[3px] border-ink flex items-center justify-between gap-3;
+  }
+}
