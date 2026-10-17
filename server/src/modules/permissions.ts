@@ -17,6 +17,22 @@ export function canDecideExcuse(userId: string, eventOrganizerId: string): boole
   return userId === eventOrganizerId;
 }
 
+export interface LeaveParty {
+  id: string;
+  role: Role;
+  departmentId: string;
+}
+
+/**
+ * Admins can approve any leave, managers only leave from their own department.
+ * Nobody approves their own request.
+ */
+export function canDecideLeave(approver: LeaveParty, requester: LeaveParty): boolean {
+  if (approver.id === requester.id) return false;
+  if (approver.role === "ADMIN") return true;
+  return approver.role === "MANAGER" && approver.departmentId === requester.departmentId;
+}
+
 export function canChangeDocSharing(userId: string, docOwnerId: string): boolean {
   return userId === docOwnerId;
 }

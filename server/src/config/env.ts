@@ -12,4 +12,8 @@ export const env = {
     process.env.JWT_SECRET || "syncro_super_secret_jwt_key_2026_production_grade",
   CLIENT_URL: process.env.CLIENT_URL || "http://localhost:3000",
   NODE_ENV: process.env.NODE_ENV || "development",
+  COMPANY_TIMEZONE:
+    process.env.COMPANY_TIMEZONE ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "UTC",
 };

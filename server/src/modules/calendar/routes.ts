@@ -7,57 +7,55 @@ import {
   CreateEventSchema,
   RequestExcuseSchema,
   DecideExcuseSchema,
-  CalendarEventDTO,
   BusyBlockDTO,
-  Role,
-  AttendeeStatus as SharedAttendeeStatus,
+  ConflictDetailDTO,
 } from "@syncro/shared";
+import { canInviteTargetScope, canDecideExcuse } from "../permissions";
 import {
-  canInviteTargetScope,
-  canDecideExcuse,
-} from "../permissions";
+  dateKeyOf,
+  dayEndOf,
+  dayKeysTouchedBy,
+  dayStartOf,
+  dbDateToKey,
+} from "../time";
 import { getIO } from "../../socket";
+import {
+  BREAK_CATEGORIES,
+  EventWithDetails,
+  eventInclude,
+  findBreakConflicts,
+  findMeetingOverlaps,
+  findSoftConflictUserIds,
+  formatEventDTO,
+  leaveRowsForEvents,
+  leaveCoversInterval,
+  leaveTypeLabel,
+  loadActiveLeave,
+  LeaveWithUser,
+} from "./data";
 
 export const calendarRouter = Router();
 
 calendarRouter.use(requireAuth);
 
-function formatEventDTO(event: any, currentUserId: string): CalendarEventDTO {
-  const myAttendee = event.attendees.find((a: any) => a.userId === currentUserId);
-  return {
-    id: event.id,
-    organizerId: event.organizerId,
-    organizerName: event.organizer.name,
-    title: event.title,
-    description: event.description,
-    startTime: event.startTime.toISOString(),
-    endTime: event.endTime.toISOString(),
-    createdAt: event.createdAt.toISOString(),
-    myStatus: myAttendee?.status as SharedAttendeeStatus | undefined,
-    myHasConflict: myAttendee?.hasConflict,
-    attendees: event.attendees.map((a: any) => ({
-      userId: a.userId,
-      name: a.user.name,
-      email: a.user.email,
-      departmentName: a.user.department.name,
-      role: a.user.role as Role,
-      status: a.status as SharedAttendeeStatus,
-      hasConflict: a.hasConflict,
-      excuseReason: a.excuseReason,
-      organizerReply: a.organizerReply,
-      respondedAt: a.respondedAt ? a.respondedAt.toISOString() : null,
-    })),
-  };
+const PAST_GRACE_MS = 5 * 60 * 1000;
+
+function parseRange(from: unknown, to: unknown, fallbackDays: [number, number]) {
+  const now = Date.now();
+  const start = from ? new Date(String(from)) : new Date(now - fallbackDays[0] * 86400000);
+  const end = to ? new Date(String(to)) : new Date(now + fallbackDays[1] * 86400000);
+  return { start, end };
 }
 
 // GET /calendar?from&to — "events where I'm an attendee" (or organizer)
 calendarRouter.get("/calendar", async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const from = req.query.from ? new Date(String(req.query.from)) : undefined;
-    const to = req.query.to ? new Date(String(req.query.to)) : undefined;
+    const { start: from, end: to } = parseRange(req.query.from, req.query.to, [0, 0]);
+    const hasFrom = Boolean(req.query.from);
+    const hasTo = Boolean(req.query.to);
 
-    const events = await prisma.event.findMany({
+    const events: EventWithDetails[] = await prisma.event.findMany({
       where: {
         AND: [
           {
@@ -66,33 +64,23 @@ calendarRouter.get("/calendar", async (req: Request, res: Response) => {
               { organizerId: userId },
             ],
           },
-          ...(from ? [{ endTime: { gt: from } }] : []),
-          ...(to ? [{ startTime: { lt: to } }] : []),
+          ...(hasFrom ? [{ endTime: { gt: from } }] : []),
+          ...(hasTo ? [{ startTime: { lt: to } }] : []),
         ],
       },
-      include: {
-        organizer: true,
-        attendees: {
-          include: {
-            user: {
-              include: { department: true },
-            },
-          },
-          orderBy: { user: { name: "asc" } },
-        },
-      },
+      include: eventInclude,
       orderBy: { startTime: "asc" },
     });
 
-    const formatted = events.map((ev) => formatEventDTO(ev, userId));
-    res.json({ events: formatted });
+    const leaveRows = await leaveRowsForEvents(events);
+    res.json({ events: events.map((ev) => formatEventDTO(ev, userId, leaveRows)) });
   } catch (err) {
     console.error("Failed to fetch calendar:", err);
     res.status(500).json({ error: "Failed to fetch calendar" });
   }
 });
 
-// GET /availability?userIds&from&to — Returns ONLY busy time blocks (start & end), never titles or descriptions
+// GET /availability?userIds&from&to — busy blocks only (times and kind), never titles or descriptions
 calendarRouter.get(
   "/availability",
   async (req: Request, res: Response): Promise<void> => {
@@ -107,39 +95,47 @@ calendarRouter.get(
         return;
       }
 
-      const from = req.query.from
-        ? new Date(String(req.query.from))
-        : new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const to = req.query.to
-        ? new Date(String(req.query.to))
-        : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      const { start: from, end: to } = parseRange(req.query.from, req.query.to, [1, 14]);
 
-      // Single query for overlapping events on those users where they aren't EXCUSED
-      const busyAttendances = await prisma.eventAttendee.findMany({
-        where: {
-          userId: { in: rawUserIds },
-          status: { not: AttendeeStatus.EXCUSED },
-          event: {
+      const [meetings, entries, leaveRows] = await Promise.all([
+        findMeetingOverlaps(rawUserIds, from, to),
+        prisma.personalEntry.findMany({
+          where: {
+            userId: { in: rawUserIds },
             startTime: { lt: to },
             endTime: { gt: from },
           },
-        },
-        select: {
-          userId: true,
-          event: {
-            select: {
-              startTime: true,
-              endTime: true,
-            },
-          },
-        },
-      });
+          select: { userId: true, category: true, startTime: true, endTime: true },
+        }),
+        loadActiveLeave(rawUserIds, dateKeyOf(from), dateKeyOf(to)),
+      ]);
 
-      const busyBlocks: BusyBlockDTO[] = busyAttendances.map((row) => ({
-        userId: row.userId,
-        startTime: row.event.startTime.toISOString(),
-        endTime: row.event.endTime.toISOString(),
-      }));
+      const busyBlocks: BusyBlockDTO[] = [
+        ...meetings.map((m) => ({
+          userId: m.userId,
+          startTime: m.event.startTime.toISOString(),
+          endTime: m.event.endTime.toISOString(),
+          type: "MEETING" as const,
+          label: "Busy",
+        })),
+        ...entries.map((e) => {
+          const isBreak = (BREAK_CATEGORIES as string[]).includes(e.category);
+          return {
+            userId: e.userId,
+            startTime: e.startTime.toISOString(),
+            endTime: e.endTime.toISOString(),
+            type: isBreak ? ("BREAK" as const) : ("ACTIVITY" as const),
+            label: isBreak ? "Break" : "Busy",
+          };
+        }),
+        ...leaveRows.map((row) => ({
+          userId: row.userId,
+          startTime: dayStartOf(dbDateToKey(row.startDate)).toISOString(),
+          endTime: dayEndOf(dbDateToKey(row.endDate)).toISOString(),
+          type: "LEAVE" as const,
+          label: "On leave",
+        })),
+      ].sort((a, b) => a.startTime.localeCompare(b.startTime));
 
       res.json({ busyBlocks });
     } catch (err) {
@@ -149,7 +145,7 @@ calendarRouter.get(
   }
 );
 
-// POST /events — Manager books a meeting for "everyone", "departments" (e.g. IT), or "specific users"
+// POST /events — book a meeting for specific people, a department, or everyone
 calendarRouter.post(
   "/events",
   validateBody(CreateEventSchema),
@@ -164,6 +160,7 @@ calendarRouter.post(
         targetScope,
         departmentIds,
         userIds,
+        excludeUserIds,
       } = req.body;
 
       // Rule: Only managers (or admins) can invite departments or everyone
@@ -175,57 +172,103 @@ calendarRouter.post(
         return;
       }
 
-      // 1. Expand targets into a deduplicated list of individual user IDs
-      const resolvedUserIds = new Set<string>([organizer.id]);
-
-      if (targetScope === "ALL") {
-        const allUsers = await prisma.user.findMany({ select: { id: true } });
-        allUsers.forEach((u) => resolvedUserIds.add(u.id));
-      } else {
-        if (departmentIds && departmentIds.length > 0) {
-          // Even if scope is USERS, if departmentIds are passed by a non-manager, guard it
-          if (!canInviteTargetScope(organizer.role, "DEPARTMENT")) {
-            res.status(403).json({
-              error: "Forbidden: Only managers can invite entire departments",
-            });
-            return;
-          }
-          const deptUsers = await prisma.user.findMany({
-            where: { departmentId: { in: departmentIds } },
-            select: { id: true },
-          });
-          deptUsers.forEach((u) => resolvedUserIds.add(u.id));
-        }
-
-        if (userIds && userIds.length > 0) {
-          userIds.forEach((id: string) => resolvedUserIds.add(id));
-        }
-      }
-
-      const targetUserIdList = Array.from(resolvedUserIds);
       const start = new Date(startTime);
       const end = new Date(endTime);
 
-      // 2. Check for conflicts using ONE query for overlapping events on those users
-      const overlappingAttendances = await prisma.eventAttendee.findMany({
-        where: {
-          userId: { in: targetUserIdList },
-          status: { not: AttendeeStatus.EXCUSED },
-          event: {
-            startTime: { lt: end },
-            endTime: { gt: start },
-          },
-        },
-        select: {
-          userId: true,
-        },
-      });
+      if (start.getTime() < Date.now() - PAST_GRACE_MS) {
+        res.status(400).json({ error: "Meetings can't be booked in the past." });
+        return;
+      }
 
-      const conflictingUserIds = new Set(
-        overlappingAttendances.map((row) => row.userId)
+      // 1. Separate people the host picked by hand from people pulled in by a department or "everyone"
+      const pickedIds = new Set<string>(targetScope === "ALL" ? [] : userIds);
+      const expandedIds = new Set<string>();
+
+      if (targetScope === "ALL") {
+        const allUsers = await prisma.user.findMany({ select: { id: true } });
+        allUsers.forEach((u) => expandedIds.add(u.id));
+      } else if (departmentIds.length > 0) {
+        // Even if scope is USERS, if departmentIds are passed by a non-manager, guard it
+        if (!canInviteTargetScope(organizer.role, "DEPARTMENT")) {
+          res.status(403).json({
+            error: "Forbidden: Only managers can invite entire departments",
+          });
+          return;
+        }
+        const deptUsers = await prisma.user.findMany({
+          where: { departmentId: { in: departmentIds } },
+          select: { id: true },
+        });
+        deptUsers.forEach((u) => expandedIds.add(u.id));
+      }
+
+      for (const id of excludeUserIds) {
+        expandedIds.delete(id);
+      }
+
+      const candidateIds = Array.from(new Set([organizer.id, ...pickedIds, ...expandedIds]));
+
+      // 2. Leave: anyone the host picked by hand who is on leave blocks the booking
+      const { first, last } = dayKeysTouchedBy(start, end);
+      const leaveRows = (await loadActiveLeave(candidateIds, first, last)).filter((row) =>
+        leaveCoversInterval(row, start, end)
       );
+      const leaveByUser = new Map<string, LeaveWithUser>();
+      for (const row of leaveRows) {
+        if (!leaveByUser.has(row.userId)) leaveByUser.set(row.userId, row);
+      }
 
-      // 3. Create one Event and one EventAttendee row per person
+      const pickedOnLeave = Array.from(new Set([organizer.id, ...pickedIds])).filter((id) =>
+        leaveByUser.has(id)
+      );
+      if (pickedOnLeave.length > 0) {
+        const details = pickedOnLeave.map((id) => {
+          const row = leaveByUser.get(id)!;
+          return {
+            userId: id,
+            name: row.user.name,
+            reason: "LEAVE" as const,
+            label: `${leaveTypeLabel(row.type)}${row.status === "PENDING" ? " (requested)" : ""}`,
+            startTime: dayStartOf(dbDateToKey(row.startDate)).toISOString(),
+            endTime: dayEndOf(dbDateToKey(row.endDate)).toISOString(),
+          };
+        });
+        const names = details.map((d) => d.name).join(", ");
+        res.status(409).json({
+          error: `${names} ${details.length === 1 ? "is" : "are"} on leave that day. Remove ${
+            details.length === 1 ? "them" : "those people"
+          } from the invite or pick another date.`,
+          details,
+        });
+        return;
+      }
+
+      // Department or company-wide invites skip people on leave and report them back
+      const excludedOnLeave = Array.from(expandedIds)
+        .filter((id) => leaveByUser.has(id) && !pickedIds.has(id) && id !== organizer.id)
+        .map((id) => ({ userId: id, name: leaveByUser.get(id)!.user.name }));
+      excludedOnLeave.forEach((e) => expandedIds.delete(e.userId));
+
+      const targetIds = Array.from(new Set([organizer.id, ...pickedIds, ...expandedIds]));
+
+      // 3. Breaks are hard blocks: no meeting may overlap anyone's break
+      const breakConflicts: ConflictDetailDTO[] = await findBreakConflicts(targetIds, start, end);
+      if (breakConflicts.length > 0) {
+        const names = Array.from(new Set(breakConflicts.map((c) => c.name)));
+        const preview = names.slice(0, 3).join(", ");
+        const more = names.length > 3 ? ` and ${names.length - 3} more` : "";
+        res.status(409).json({
+          error: `Can't book this slot: ${preview}${more} ${
+            names.length === 1 ? "is" : "are"
+          } on break at that time. Pick another time.`,
+          details: breakConflicts,
+        });
+        return;
+      }
+
+      // 4. Soft conflicts: meetings and personal activities that overlap. The invite still goes out.
+      const conflictingUserIds = await findSoftConflictUserIds(targetIds, start, end);
+
       const createdEvent = await prisma.event.create({
         data: {
           organizerId: organizer.id,
@@ -234,35 +277,23 @@ calendarRouter.post(
           startTime: start,
           endTime: end,
           attendees: {
-            create: targetUserIdList.map((uid) => ({
+            create: targetIds.map((uid) => ({
               userId: uid,
-              status:
-                uid === organizer.id
-                  ? AttendeeStatus.ACCEPTED
-                  : AttendeeStatus.INVITED,
+              status: uid === organizer.id ? AttendeeStatus.ACCEPTED : AttendeeStatus.INVITED,
               hasConflict: conflictingUserIds.has(uid),
             })),
           },
         },
-        include: {
-          organizer: true,
-          attendees: {
-            include: {
-              user: { include: { department: true } },
-            },
-            orderBy: { user: { name: "asc" } },
-          },
-        },
+        include: eventInclude,
       });
 
-      const eventDTO = formatEventDTO(createdEvent, organizer.id);
+      const eventDTO = formatEventDTO(createdEvent, organizer.id, leaveRows);
 
-      // 4. Push a notification over WebSocket to each attendee
       try {
         const io = getIO();
-        for (const uid of targetUserIdList) {
+        for (const uid of targetIds) {
           io.to(`user:${uid}`).emit("event:invited", {
-            event: formatEventDTO(createdEvent, uid),
+            event: formatEventDTO(createdEvent, uid, leaveRows),
             hasConflict: conflictingUserIds.has(uid),
           });
         }
@@ -274,6 +305,7 @@ calendarRouter.post(
         event: eventDTO,
         conflictsCount: conflictingUserIds.size,
         conflictingUserIds: Array.from(conflictingUserIds),
+        excludedOnLeave,
       });
     } catch (err) {
       console.error("Failed to create event:", err);
@@ -311,16 +343,11 @@ calendarRouter.patch(
 
       const updatedEvent = await prisma.event.findUnique({
         where: { id: eventId },
-        include: {
-          organizer: true,
-          attendees: {
-            include: { user: { include: { department: true } } },
-            orderBy: { user: { name: "asc" } },
-          },
-        },
+        include: eventInclude,
       });
+      const leaveRows = await leaveRowsForEvents([updatedEvent!]);
 
-      res.json({ event: formatEventDTO(updatedEvent, userId) });
+      res.json({ event: formatEventDTO(updatedEvent!, userId, leaveRows) });
     } catch (err) {
       console.error("Failed to accept event:", err);
       res.status(500).json({ error: "Failed to accept event" });
@@ -362,16 +389,11 @@ calendarRouter.patch(
 
       const updatedEvent = await prisma.event.findUnique({
         where: { id: eventId },
-        include: {
-          organizer: true,
-          attendees: {
-            include: { user: { include: { department: true } } },
-            orderBy: { user: { name: "asc" } },
-          },
-        },
+        include: eventInclude,
       });
+      const leaveRows = await leaveRowsForEvents([updatedEvent!]);
 
-      // Notify the boss (organizer) in real time over WebSocket
+      // Notify the boss (organizer) in real time
       try {
         const io = getIO();
         io.to(`user:${updatedEvent!.organizerId}`).emit("event:excuse_requested", {
@@ -380,13 +402,13 @@ calendarRouter.patch(
           attendeeId: user.id,
           attendeeName: user.name,
           reason,
-          event: formatEventDTO(updatedEvent, updatedEvent!.organizerId),
+          event: formatEventDTO(updatedEvent!, updatedEvent!.organizerId, leaveRows),
         });
       } catch {
         // Ignore if socket server not initialized
       }
 
-      res.json({ event: formatEventDTO(updatedEvent, user.id) });
+      res.json({ event: formatEventDTO(updatedEvent!, user.id, leaveRows) });
     } catch (err) {
       console.error("Failed to submit excuse request:", err);
       res.status(500).json({ error: "Failed to submit excuse request" });
@@ -442,14 +464,9 @@ calendarRouter.patch(
 
       const updatedEvent = await prisma.event.findUnique({
         where: { id: eventId },
-        include: {
-          organizer: true,
-          attendees: {
-            include: { user: { include: { department: true } } },
-            orderBy: { user: { name: "asc" } },
-          },
-        },
+        include: eventInclude,
       });
+      const leaveRows = await leaveRowsForEvents([updatedEvent!]);
 
       // Notify the attendee in real time with the boss's decision & message
       try {
@@ -461,13 +478,13 @@ calendarRouter.patch(
           decision,
           status: newStatus,
           replyMessage,
-          event: formatEventDTO(updatedEvent, attendeeUserId),
+          event: formatEventDTO(updatedEvent!, attendeeUserId, leaveRows),
         });
       } catch {
         // Ignore if socket server not initialized
       }
 
-      res.json({ event: formatEventDTO(updatedEvent, boss.id) });
+      res.json({ event: formatEventDTO(updatedEvent!, boss.id, leaveRows) });
     } catch (err) {
       console.error("Failed to decide excuse:", err);
       res.status(500).json({ error: "Failed to decide excuse" });

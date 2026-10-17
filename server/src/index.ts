@@ -7,6 +7,8 @@ import { env } from "./config/env";
 import { authRouter } from "./modules/auth/routes";
 import { chatRouter } from "./modules/chat/routes";
 import { calendarRouter } from "./modules/calendar/routes";
+import { entriesRouter } from "./modules/calendar/entries";
+import { leaveRouter } from "./modules/leave/routes";
 import { docsRouter } from "./modules/docs/routes";
 import { initSocketServer } from "./socket";
 
@@ -40,11 +42,15 @@ app.get("/api/health", (_req, res) => {
 app.use("/api", authRouter);
 app.use("/api", chatRouter);
 app.use("/api", calendarRouter);
+app.use("/api", entriesRouter);
+app.use("/api", leaveRouter);
 app.use("/api", docsRouter);
 
 app.use("/", authRouter);
 app.use("/", chatRouter);
 app.use("/", calendarRouter);
+app.use("/", entriesRouter);
+app.use("/", leaveRouter);
 app.use("/", docsRouter);
 
 if (process.env.NODE_ENV !== "test") {

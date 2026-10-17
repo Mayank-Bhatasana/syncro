@@ -26,6 +26,30 @@ enum DocAccessLevel {
   EDITOR
 }
 
+enum EntryCategory {
+  LUNCH
+  COFFEE
+  BREAK
+  FOCUS
+  TASK
+  TRAINING
+  ERRAND
+  OTHER
+}
+
+enum LeaveType {
+  ANNUAL
+  SICK
+  PERSONAL
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
 model Department {
   id        String   @id @default(uuid()) @db.Uuid
   name      String   @unique
@@ -40,6 +64,7 @@ model User {
   email        String       @unique
   passwordHash String       @map("password_hash")
   name         String
+  jobTitle     String?      @map("job_title")
   role         Role         @default(EMPLOYEE)
   departmentId String       @map("department_id") @db.Uuid
   createdAt    DateTime     @default(now()) @map("created_at")
@@ -51,6 +76,9 @@ model User {
   eventAttendances    EventAttendee[]
   ownedDocuments      Document[]           @relation("DocumentOwner")
   documentPermissions DocumentPermission[]
+  personalEntries     PersonalEntry[]
+  leaveRequests       LeaveRequest[]        @relation("LeaveRequester")
+  leaveDecisions      LeaveRequest[]        @relation("LeaveDecider")
 
   @@index([departmentId])
   @@map("users")
@@ -162,3 +190,41 @@ model DocumentPermission {
   @@index([userId])
   @@map("document_permissions")
 }
+
+model PersonalEntry {
+  id        String        @id @default(uuid()) @db.Uuid
+  userId    String        @map("user_id") @db.Uuid
+  category  EntryCategory
+  title     String
+  notes     String        @default("")
+  startTime DateTime      @map("start_time")
+  endTime   DateTime      @map("end_time")
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, startTime])
+  @@map("personal_entries")
+}
+
+model LeaveRequest {
+  id           String      @id @default(uuid()) @db.Uuid
+  userId       String      @map("user_id") @db.Uuid
+  type         LeaveType
+  status       LeaveStatus @default(PENDING)
+  startDate    DateTime    @map("start_date") @db.Date
+  endDate      DateTime    @map("end_date") @db.Date
+  reason       String      @default("")
+  decisionNote String?     @map("decision_note")
+  decidedById  String?     @map("decided_by_id") @db.Uuid
+  decidedAt    DateTime?   @map("decided_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  user      User  @relation("LeaveRequester", fields: [userId], references: [id], onDelete: Cascade)
+  decidedBy User? @relation("LeaveDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([userId, startDate])
+  @@index([status, startDate])
+  @@map("leave_requests")
+}
+
