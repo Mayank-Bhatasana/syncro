@@ -6,12 +6,15 @@ import { api } from "../api/client";
 import { useSyncroStore } from "../store/useSyncroStore";
 import { useSocket } from "../socket/SocketProvider";
 import { Avatar } from "./ui";
+import { isGifUrl, randomMedia, type MediaPick } from "@syncro/shared";
 import {
   MessageSquare,
   Plus,
   Send,
   Users,
   ImagePlus,
+  Shuffle,
+  Sticker,
   Film,
   X,
   ChevronDown,
@@ -37,6 +40,9 @@ export function ChatModule() {
     name: string;
   } | null>(null);
   const [showAllMembers, setShowAllMembers] = useState(false);
+
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
+  const [mediaOptions, setMediaOptions] = useState<MediaPick[]>([]);
 
   const [showNewModal, setShowNewModal] = useState(false);
   const [newChatName, setNewChatName] = useState("");
@@ -138,6 +144,28 @@ export function ChatModule() {
     };
     reader.readAsDataURL(file);
     e.target.value = "";
+  };
+
+  const openMediaPicker = () => {
+    setMediaOptions(Array.from({ length: 6 }, () => randomMedia()));
+    setShowMediaPicker(true);
+  };
+
+  const sendRandomMedia = (url: string) => {
+    if (!socket || !activeConversationId) return;
+    setShowMediaPicker(false);
+    socket.emit("typing", { conversationId: activeConversationId, isTyping: false });
+    socket.emit(
+      "message:send",
+      { conversationId: activeConversationId, content: "", mediaUrl: url, mediaType: "image" },
+      (ack: { error?: string }) => {
+        if (ack?.error) {
+          addNotification({ title: "Failed to Send", message: ack.error, type: "warning" });
+        }
+        queryClient.invalidateQueries({ queryKey: ["messages", activeConversationId] });
+        queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      }
+    );
   };
 
   const handleSend = (e: React.FormEvent) => {
@@ -258,6 +286,8 @@ export function ChatModule() {
                   conv.lastMessage.content ||
                   (conv.lastMessage.mediaType === "video"
                     ? "🎬 Sent a video"
+                    : isGifUrl(conv.lastMessage.mediaUrl)
+                    ? "🎞️ Sent a GIF"
                     : "📷 Sent a photo")
                 }`
               : "No messages yet";
@@ -304,37 +334,40 @@ export function ChatModule() {
           })}
         </div>
 
-        {/* Scoped Online Footer: ONLY shows online users from the currently selected group */}
-        <div className="p-3.5 border-t-[3px] border-ink bg-paper">
-          <div className="flex items-center justify-between mb-2.5">
+        {/* Scoped Online Footer: ONLY shows online users from the currently selected group.
+            Capped at 35% of the sidebar; the member list scrolls inside that space. */}
+        <div className="border-t-[3px] border-ink bg-paper flex flex-col min-h-0 max-h-[35%]">
+          <div className="px-3.5 pt-3.5 pb-2.5 shrink-0">
             <p className="text-xs font-extrabold truncate">
               Online in This Chat ({activeGroupOnlineMembers.length}/
               {activeGroupMembers.length})
             </p>
           </div>
           {activeConv ? (
-            <div className="flex flex-wrap gap-1.5">
-              {activeGroupMembers.map((u) => {
-                const online = onlineUserIds.includes(u.id);
-                return (
-                  <span
-                    key={u.id}
-                    className={`chip ${
-                      online ? "bg-mint" : "bg-white text-ink/50"
-                    }`}
-                  >
+            <div className="flex-1 min-h-0 overflow-y-auto px-3.5 pb-3.5">
+              <div className="flex flex-wrap gap-1.5">
+                {activeGroupMembers.map((u) => {
+                  const online = onlineUserIds.includes(u.id);
+                  return (
                     <span
-                      className={`w-1.5 h-1.5 rounded-full bg-ink ${
-                        online ? "animate-pulse" : "opacity-30"
+                      key={u.id}
+                      className={`chip ${
+                        online ? "bg-mint" : "bg-white text-ink/50"
                       }`}
-                    />
-                    {u.name.split(" ")[0]} ({u.departmentName})
-                  </span>
-                );
-              })}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full bg-ink ${
+                          online ? "animate-pulse" : "opacity-30"
+                        }`}
+                      />
+                      {u.name.split(" ")[0]} ({u.departmentName})
+                    </span>
+                  );
+                })}
+              </div>
             </div>
           ) : (
-            <p className="text-xs font-medium text-ink/60">
+            <p className="px-3.5 pb-3.5 text-xs font-medium text-ink/60">
               Select a conversation to view online members
             </p>
           )}
@@ -437,11 +470,17 @@ export function ChatModule() {
                         }`}
                       >
                         {msg.mediaUrl && msg.mediaType === "image" && (
-                          <img
-                            src={msg.mediaUrl}
-                            alt="Chat attachment"
-                            className="rounded-2xl max-h-72 w-auto object-cover border-2 border-ink"
-                          />
+                          <div className="relative">
+                            <img
+                              src={msg.mediaUrl}
+                              alt="Chat attachment"
+                              loading="lazy"
+                              className="rounded-2xl max-h-72 w-auto object-cover border-2 border-ink"
+                            />
+                            {isGifUrl(msg.mediaUrl) && (
+                              <span className="absolute top-2 left-2 chip bg-sun text-[10px] py-0">GIF</span>
+                            )}
+                          </div>
                         )}
                         {msg.mediaUrl && msg.mediaType === "video" && (
                           <video
@@ -520,40 +559,87 @@ export function ChatModule() {
               </div>
             )}
 
-            {/* Message Input + Photo/Video Upload Trigger */}
-            <form
-              onSubmit={handleSend}
-              className="p-4 border-t-[3px] border-ink bg-white flex items-center gap-2.5"
-            >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/*"
-                onChange={handleFileChange}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="btn bg-sun px-3.5 py-2.5 shrink-0"
-                title="Attach Photo or Video"
+            {/* Message Input + Photo/Video Upload Trigger + GIF picker */}
+            <div className="relative">
+              {showMediaPicker && (
+                <div className="absolute bottom-full left-4 right-4 mb-3 card p-3 space-y-3 z-20 animate-pop-in">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-display font-extrabold text-sm">Send a random GIF or photo</p>
+                    <div className="flex items-center gap-2">
+                      <button type="button" onClick={openMediaPicker} className="btn btn-sm bg-white">
+                        <Shuffle className="w-3.5 h-3.5" /> Shuffle
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowMediaPicker(false)}
+                        className="btn btn-icon bg-white p-1.5"
+                        title="Close"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    {mediaOptions.map((m) => (
+                      <button
+                        key={m.url}
+                        type="button"
+                        onClick={() => sendRandomMedia(m.url)}
+                        className="relative h-24 rounded-xl border-2 border-ink overflow-hidden bg-paper transition hover:-translate-y-0.5 hover:shadow-pop-sm"
+                      >
+                        <img src={m.url} alt="" loading="lazy" className="w-full h-full object-cover" />
+                        <span className="absolute top-1.5 left-1.5 chip bg-white text-[9px] py-0">
+                          {m.kind === "gif" ? "GIF" : "Photo"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <form
+                onSubmit={handleSend}
+                className="p-4 border-t-[3px] border-ink bg-white flex items-center gap-2.5"
               >
-                <ImagePlus className="w-4 h-4" />
-                <span className="hidden sm:inline">Photo / Video</span>
-              </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="btn bg-sun px-3.5 py-2.5 shrink-0"
+                  title="Attach Photo or Video"
+                >
+                  <ImagePlus className="w-4 h-4" />
+                  <span className="hidden sm:inline">Photo / Video</span>
+                </button>
 
-              <input
-                type="text"
-                value={messageText}
-                onChange={(e) => handleTyping(e.target.value)}
-                placeholder="Write a message or attach a photo/video..."
-                className="field flex-1 min-w-0"
-              />
-              <button type="submit" className="btn bg-bubble px-5 py-2.5">
-                <Send className="w-4 h-4" />
-                Send
-              </button>
-            </form>
+                <button
+                  type="button"
+                  onClick={() => (showMediaPicker ? setShowMediaPicker(false) : openMediaPicker())}
+                  className="btn bg-white px-3.5 py-2.5 shrink-0"
+                  title="Send a random GIF or photo"
+                >
+                  <Sticker className="w-4 h-4" />
+                  <span className="hidden sm:inline">GIF</span>
+                </button>
+
+                <input
+                  type="text"
+                  value={messageText}
+                  onChange={(e) => handleTyping(e.target.value)}
+                  placeholder="Write a message or attach a photo/video..."
+                  className="field flex-1 min-w-0"
+                />
+                <button type="submit" className="btn bg-bubble px-5 py-2.5">
+                  <Send className="w-4 h-4" />
+                  Send
+                </button>
+              </form>
+            </div>
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center font-display font-bold text-lg text-ink/50 p-6 text-center">
