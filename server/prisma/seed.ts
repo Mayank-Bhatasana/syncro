@@ -9,6 +9,7 @@ import {
 } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import * as Y from "yjs";
+import { randomMedia } from "@syncro/shared";
 import { env } from "../src/config/env";
 import {
   addDays,
@@ -1104,6 +1105,18 @@ async function seedChat(): Promise<{ conversations: number; messages: number }> 
 
     times.forEach((t) => {
       const sender = pick(senderPool);
+      if (chance(0.05)) {
+        const media = randomMedia(rand);
+        rows.push({
+          conversationId: created.id,
+          senderId: U[sender].id,
+          content: chance(0.4) ? sentence(pick(TOPICS[topic] ?? TOPICS.random)) : "",
+          mediaUrl: media.url,
+          mediaType: "image",
+          createdAt: t,
+        });
+        return;
+      }
       rows.push({
         conversationId: created.id,
         senderId: U[sender].id,

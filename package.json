@@ -13,6 +13,7 @@
     "build:shared": "npm --workspace=shared run build",
     "db:migrate": "npm --workspace=server run db:migrate",
     "db:seed": "npm --workspace=server run db:seed",
-    "test": "npm --workspace=server run test"
+    "test": "npm --workspace=server run test",
+    "simulate": "npm --workspace=server run simulate:chat"
   }
 }

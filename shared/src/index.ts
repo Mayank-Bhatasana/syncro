@@ -318,3 +318,5 @@ export interface DocumentDTO {
   updatedAt: string;
   createdAt: string;
 }
+
+export * from "./media";

@@ -14,6 +14,7 @@ Syncro is a full-stack demo of a real internal tool. It ships with a realistic 4
 - Direct messages and group channels, with unread counts.
 - Live typing indicators and presence (who is online in this conversation).
 - Photo and video attachments, up to 10 MB.
+- A GIF & photo picker in the composer sends a random GIF or photo with one click. Shuffle gives you a new set.
 - Only members can read or send in a conversation. The server checks this on every request and every socket message.
 
 ![Chat](docs/screenshots/chat.png)
@@ -31,6 +32,28 @@ The calendar is a week-by-time grid with your meetings, breaks, activities and l
 - Several people edit the same document at once, with changes merged automatically (Yjs CRDT).
 - Owners share with **editor** or **viewer** access. Viewers are read-only, and the server rejects their edits.
 - Changes are saved as you type.
+
+---
+
+### Chat simulator
+
+Want the company to feel alive? Run the simulator while the server is up:
+
+```bash
+npm run simulate
+```
+
+It signs in as a handful of seeded teammates and has them chat for real over the same WebSocket path the web app uses. They start typing, send messages, post random GIFs and photos, and sometimes type something and delete it. You'll see the typing bubbles and unread badges update live in the browser.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SIM_USERS` | `10` | How many teammates to simulate |
+| `SIM_MIN_GAP_MS` | `6000` | Shortest pause between one person's actions |
+| `SIM_MAX_GAP_MS` | `20000` | Longest pause between one person's actions |
+
+Example: `SIM_USERS=20 SIM_MIN_GAP_MS=2000 SIM_MAX_GAP_MS=8000 npm run simulate`
+
+Press Ctrl+C to stop. Photos come from picsum.photos and GIFs from GIPHY and cataas.com, so the images load only when the machine is online.
 
 ---
 
@@ -71,6 +94,7 @@ npm run db:seed                       # load the demo company
 
 npm run dev:server                    # API on http://localhost:4000
 npm run dev:client                    # web app on http://localhost:3000
+npm run simulate                      # optional: teammates start chatting on their own
 ```
 
 Open http://localhost:3000 and sign in with any account below.
@@ -139,11 +163,13 @@ flowchart LR
 ```text
 syncro/
 ├── docker-compose.yml        PostgreSQL and Redis for local development
-├── shared/                   Zod schemas and TypeScript types used by server and client
+├── shared/                   Zod schemas, types and the GIF/photo catalog used by server and client
 ├── server/
 │   ├── prisma/
 │   │   ├── schema.prisma     Data model
 │   │   └── seed.ts           Demo company generator
+│   ├── scripts/
+│   │   └── simulate-chat.ts   Chat simulator (npm run simulate)
 │   ├── src/
 │   │   ├── modules/
 │   │   │   ├── auth/         Login, current user, users, departments
