@@ -51,7 +51,7 @@ export function DocsModule() {
   const [shareUserId, setShareUserId] = useState("");
   const [shareAccess, setShareAccess] = useState<DocAccessLevel>("EDITOR");
 
-  // Yjs live document state
+  // Live document state
   const ydocRef = useRef<Y.Doc | null>(null);
   const [content, setContent] = useState("");
   const [accessRole, setAccessRole] = useState<"OWNER" | DocAccessLevel>("VIEWER");
@@ -83,7 +83,7 @@ export function DocsModule() {
 
   const activeDoc = documents.find((d) => d.id === activeDocumentId);
 
-  // Join Yjs session over WebSocket when activeDocumentId changes
+  // Join the live editing session when activeDocumentId changes
   useEffect(() => {
     if (!socket || !activeDocumentId) return;
 
@@ -194,12 +194,12 @@ export function DocsModule() {
         (ack: { ok?: boolean; error?: string }) => {
           if (ack?.error) {
             addNotification({
-              title: "Edit Rejected by Server",
+              title: "Edit not saved",
               message: ack.error,
               type: "warning",
             });
           } else {
-            setLastSavedBy("Saved to Postgres via Yjs CRDT");
+            setLastSavedBy("All changes saved");
           }
         }
       );
@@ -263,7 +263,7 @@ export function DocsModule() {
             <div className="min-w-0">
               <h2 className="font-extrabold text-lg leading-tight">Shared Docs</h2>
               <p className="text-[11px] font-semibold text-ink/70">
-                Live Yjs CRDT sync
+                Edit together in real time
               </p>
             </div>
           </div>
@@ -329,7 +329,7 @@ export function DocsModule() {
                   </h2>
                   {isEditable ? (
                     <span className="chip bg-mint py-1">
-                      <Edit3 className="w-3 h-3" /> {accessRole} (Live Yjs CRDT)
+                      <Edit3 className="w-3 h-3" /> {accessRole} (Live editing)
                     </span>
                   ) : (
                     <span className="chip bg-sun py-1">
@@ -522,8 +522,8 @@ export function DocsModule() {
                       </div>
                       <div className="text-[11px] font-medium text-ink/70 mt-0.5">
                         {lvl === "EDITOR"
-                          ? "Can edit live via Yjs CRDT"
-                          : "Read-only (server rejects edits)"}
+                          ? "Edit together in real time"
+                          : "View only, no edits"}
                       </div>
                     </button>
                   );

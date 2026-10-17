@@ -24,7 +24,7 @@ import {
 const TABS = [
   {
     id: "calendar",
-    label: "Calendar & Conflicts",
+    label: "Calendar",
     icon: Calendar,
     accent: "bg-azure",
   },
@@ -36,7 +36,7 @@ const TABS = [
   },
   {
     id: "docs",
-    label: "Collaborative Docs (Yjs)",
+    label: "Shared Docs",
     icon: FileText,
     accent: "bg-mint",
   },
@@ -141,7 +141,7 @@ export default function HomePage() {
                   Syncro
                 </h1>
                 <p className="text-xs font-semibold text-ink/60 mt-1.5">
-                  Chat • Smart Department Calendar • Live Yjs Docs
+                  Chat • Calendar • Shared Docs
                 </p>
               </div>
             </div>
@@ -205,17 +205,17 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Right: 1-Click Role Switcher for Testing Flows */}
+          {/* Right: sign in as a teammate */}
           <div className="border-t-[3px] md:border-t-0 md:border-l-[3px] border-dashed border-ink pt-6 md:pt-0 md:pl-8 space-y-3">
             <h2 className="text-lg font-extrabold flex items-center gap-2">
               <span className="w-8 h-8 rounded-xl bg-grape border-2 border-ink shadow-pop-sm flex items-center justify-center">
                 <UserCheck className="w-4 h-4" />
               </span>
-              Instant Demo Account Switcher
+              Sign in as a teammate
             </h2>
             <p className="text-xs text-ink/60">
-              Click any account below to sign in immediately and test Manager vs
-              Employee permissions, conflict requests, and Yjs docs:
+              Pick anyone to see Syncro from their side: their chats, calendar and
+              documents.
             </p>
 
             <div className="space-y-2.5 max-h-80 overflow-y-auto p-1 -m-1">
@@ -228,7 +228,7 @@ export default function HomePage() {
                   <Avatar name={u.name} size="sm" />
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-extrabold truncate">{u.name}</p>
-                    <p className="text-xs text-ink/60 truncate">{u.email}</p>
+                    <p className="text-xs text-ink/60 truncate">{u.jobTitle ?? u.email}</p>
                   </div>
                   <div className="text-right shrink-0 space-y-1">
                     <span
@@ -291,7 +291,7 @@ export default function HomePage() {
             value={currentUser.email}
             onChange={(e) => handleLogin(e.target.value, "password123")}
             className="field w-auto max-w-[240px] py-1.5 text-xs font-bold cursor-pointer"
-            title="Quickly switch user account to test Boss vs Employee flows"
+            title="Switch to another teammate"
           >
             {demoData?.users.map((u) => (
               <option key={u.id} value={u.email}>
@@ -321,7 +321,7 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Live WebSocket Toast Notifications */}
+      {/* Live notifications */}
       {notifications.length > 0 && (
         <div className="fixed bottom-5 right-5 z-50 space-y-3 max-w-sm w-full">
           {notifications.map((n) => {

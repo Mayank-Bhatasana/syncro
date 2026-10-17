@@ -140,6 +140,40 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       }
     );
 
+    s.on(
+      "leave:requested",
+      (payload: { userName: string; startDate: string; endDate: string }) => {
+        queryClient.invalidateQueries({ queryKey: ["leave-approvals"] });
+        addNotification({
+          title: `🌴 Leave request from ${payload.userName}`,
+          message: `${payload.startDate} to ${payload.endDate}. Waiting for your decision.`,
+          type: "info",
+        });
+      }
+    );
+
+    s.on(
+      "leave:decided",
+      (payload: {
+        status: "APPROVED" | "REJECTED";
+        decidedByName: string;
+        startDate: string;
+        endDate: string;
+        decisionNote: string | null;
+      }) => {
+        queryClient.invalidateQueries({ queryKey: ["leave"] });
+        queryClient.invalidateQueries({ queryKey: ["calendar"] });
+        addNotification({
+          title:
+            payload.status === "APPROVED"
+              ? `✅ Leave approved by ${payload.decidedByName}`
+              : `❌ Leave declined by ${payload.decidedByName}`,
+          message: payload.decisionNote || `${payload.startDate} to ${payload.endDate}`,
+          type: payload.status === "APPROVED" ? "success" : "warning",
+        });
+      }
+    );
+
     s.on("doc:shared", (payload: { document: any; accessLevel: string }) => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
       addNotification({

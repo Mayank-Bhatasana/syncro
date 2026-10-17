@@ -5,9 +5,17 @@ import {
   MessageDTO,
   CalendarEventDTO,
   BusyBlockDTO,
+  ConflictDetailDTO,
   DocumentDTO,
+  PersonalEntryDTO,
+  LeaveRequestDTO,
+  LeaveBalanceDTO,
+  TeamLeaveDTO,
   CreateConversationInput,
   CreateEventInput,
+  CreatePersonalEntryInput,
+  CreateLeaveRequestInput,
+  LeaveDecisionInput,
   RequestExcuseInput,
   DecideExcuseInput,
   CreateDocumentInput,
@@ -38,6 +46,17 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
+export class ApiError extends Error {
+  status: number;
+  details?: Array<Partial<ConflictDetailDTO> & { label?: string }>;
+
+  constructor(message: string, status: number, details?: ApiError["details"]) {
+    super(message);
+    this.status = status;
+    this.details = details;
+  }
+}
+
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
   const headers: Record<string, string> = {
@@ -57,7 +76,7 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
 
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || "Request failed");
+    throw new ApiError(data.error || "Request failed", res.status, data.details);
   }
   return data as T;
 }
@@ -94,21 +113,17 @@ export const api = {
       }`
     ),
 
-  // Calendar
-  getCalendar: (from?: string, to?: string) => {
-    const params = new URLSearchParams();
-    if (from) params.set("from", from);
-    if (to) params.set("to", to);
-    const qs = params.toString();
-    return apiFetch<{ events: CalendarEventDTO[] }>(
-      `/api/calendar${qs ? `?${qs}` : ""}`
-    );
-  },
+  // Calendar: meetings
+  getCalendar: (from: string, to: string) =>
+    apiFetch<{ events: CalendarEventDTO[] }>(
+      `/api/calendar?${new URLSearchParams({ from, to }).toString()}`
+    ),
   createEvent: (input: CreateEventInput) =>
     apiFetch<{
       event: CalendarEventDTO;
       conflictsCount: number;
       conflictingUserIds: string[];
+      excludedOnLeave: { userId: string; name: string }[];
     }>("/api/events", {
       method: "POST",
       body: JSON.stringify(input),
@@ -145,7 +160,44 @@ export const api = {
     );
   },
 
-  // Collaborative Docs
+  // Calendar: personal breaks and activities
+  getEntries: (from: string, to: string) =>
+    apiFetch<{ entries: PersonalEntryDTO[] }>(
+      `/api/entries?${new URLSearchParams({ from, to }).toString()}`
+    ),
+  createEntry: (input: CreatePersonalEntryInput) =>
+    apiFetch<{ entries: PersonalEntryDTO[] }>("/api/entries", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  deleteEntry: (id: string) =>
+    apiFetch<{ ok: boolean }>(`/api/entries/${id}`, { method: "DELETE" }),
+
+  // Calendar: leave
+  getLeave: () =>
+    apiFetch<{ requests: LeaveRequestDTO[]; balance: LeaveBalanceDTO }>("/api/leave"),
+  getLeaveApprovals: () =>
+    apiFetch<{ requests: LeaveRequestDTO[] }>("/api/leave/approvals"),
+  getTeamLeave: (from: string, to: string) =>
+    apiFetch<{ leaves: TeamLeaveDTO[] }>(
+      `/api/leave/team?${new URLSearchParams({ from, to }).toString()}`
+    ),
+  requestLeave: (input: CreateLeaveRequestInput) =>
+    apiFetch<{ leave: LeaveRequestDTO }>("/api/leave", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  decideLeave: (id: string, input: LeaveDecisionInput) =>
+    apiFetch<{ leave: LeaveRequestDTO }>(`/api/leave/${id}/decision`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  cancelLeave: (id: string) =>
+    apiFetch<{ leave: LeaveRequestDTO }>(`/api/leave/${id}/cancel`, {
+      method: "PATCH",
+    }),
+
+  // Shared Docs
   getDocuments: () => apiFetch<{ documents: DocumentDTO[] }>("/api/documents"),
   createDocument: (input: CreateDocumentInput) =>
     apiFetch<{ document: DocumentDTO }>("/api/documents", {

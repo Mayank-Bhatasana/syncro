@@ -506,7 +506,7 @@ export function ChatModule() {
                       Attached {mediaAttachment.type}: {mediaAttachment.name}
                     </p>
                     <p className="text-[11px] font-medium text-ink/70">
-                      Ready to send over WebSocket
+                      Ready to send
                     </p>
                   </div>
                 </div>

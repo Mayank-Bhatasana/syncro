@@ -5,7 +5,7 @@ import { Providers } from "./providers";
 export const metadata: Metadata = {
   title: "Syncro — Collaborative Workspace",
   description:
-    "Real-Time Chat, Department Calendar with Conflict Excuse Workflow, and Collaborative Yjs Docs",
+    "Chat, a shared team calendar with breaks and leave, and shared documents for your whole company",
 };
 
 export default function RootLayout({
