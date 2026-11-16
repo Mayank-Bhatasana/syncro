@@ -27,11 +27,13 @@ The calendar is a week-by-time grid with your meetings, breaks, activities and l
 - **Activities**: focus time, tasks, training, errands. They show as busy to colleagues. Titles stay private, but overlaps are flagged like meeting clashes.
 - **Leave**: request annual, sick or personal leave in advance. Managers approve it for their own department, admins approve managers. The day is held as soon as it's requested.
 - **Availability**: check whether people are free, busy, on break or on leave. You see the time blocks and their type, never the titles.
+- **Drag to schedule**: drag a block to a new time (or across days) to move it, and drag across an empty part of a day to add a break or activity for that slot. Moves go through the same server rules as booking, so a move that breaks a rule is rejected and the block snaps back.
 
 ### Shared documents
 - Several people edit the same document at once, with changes merged automatically (Yjs CRDT).
 - Owners share with **editor** or **viewer** access. Viewers are read-only, and the server rejects their edits.
 - Changes are saved as you type.
+- **Live cursors**: everyone in a document sees the others' cursors and selections, each in a colour with their name. Positions use Yjs relative positions, so they stay on the right words while people type.
 
 ---
 
@@ -84,20 +86,26 @@ The rules are unit-tested in [`server/tests/calendar-rules.test.ts`](server/test
 ```bash
 git clone git@github.com:Mayank-Bhatasana/syncro.git
 cd syncro
-
-docker compose up -d                  # PostgreSQL on :5433, Redis on :6380
-npm install
-
-cp server/.env.example server/.env    # then edit values if you need to
-npm run db:migrate                    # create the tables
-npm run db:seed                       # load the demo company
-
-npm run dev:server                    # API on http://localhost:4000
-npm run dev:client                    # web app on http://localhost:3000
-npm run simulate                      # optional: teammates start chatting on their own
+npm start
 ```
 
-Open http://localhost:3000 and sign in with any account below.
+`npm start` does everything else: it starts PostgreSQL and Redis in Docker, installs packages, creates the tables, loads the demo company on the first run, and starts the API and the web app. Press Ctrl+C to stop.
+
+Then open http://localhost:3000 and sign in with any account below. The API runs on http://localhost:4000.
+
+Optional: run `npm run simulate` in another terminal to have teammates start chatting on their own.
+
+Running the pieces by hand:
+
+```bash
+docker compose up -d                  # PostgreSQL on :5433, Redis on :6380
+npm install
+cp server/.env.example server/.env    # then edit values if you need to
+npm run db:migrate                    # create the tables
+npm run db:seed                       # load the demo company (deletes existing data)
+npm run dev:server                    # API on http://localhost:4000
+npm run dev:client                    # web app on http://localhost:3000
+```
 
 Run the test suite with:
 
@@ -202,14 +210,14 @@ All endpoints are available under `/api`. Requests are authenticated with an HTT
 | --- | --- |
 | Auth and people | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `GET /users`, `GET /departments` |
 | Chat | `GET /conversations`, `POST /conversations`, `GET /conversations/:id/messages` |
-| Meetings | `GET /calendar`, `POST /events`, `PATCH /events/:id/accept`, `PATCH /events/:id/excuse`, `PATCH /events/:id/attendees/:userId/decision` |
+| Meetings | `GET /calendar`, `POST /events`, `PATCH /events/:id/time` (organizer moves a meeting), `PATCH /events/:id/accept`, `PATCH /events/:id/excuse`, `PATCH /events/:id/attendees/:userId/decision` |
 | Availability | `GET /availability?userIds&from&to` returns busy blocks only (meeting, activity, break, leave) |
-| Breaks and activities | `GET /entries`, `POST /entries` (optionally repeated on weekdays), `DELETE /entries/:id` |
+| Breaks and activities | `GET /entries`, `POST /entries` (optionally repeated on weekdays), `PATCH /entries/:id` (move), `DELETE /entries/:id` |
 | Leave | `GET /leave`, `POST /leave`, `GET /leave/approvals`, `GET /leave/team`, `PATCH /leave/:id/decision`, `PATCH /leave/:id/cancel` |
 | Documents | `GET /documents`, `POST /documents`, `GET /documents/:id`, `PUT /documents/:id/share` |
 | Health | `GET /health` |
 
-Real-time events include `message:new`, `typing`, `presence:update`, `event:invited`, `event:excuse_requested`, `event:excuse_decided`, `leave:requested`, `leave:decided`, `doc:update` and `doc:collaborators`.
+Real-time events include `message:new`, `typing`, `presence:update`, `event:invited`, `event:updated`, `event:excuse_requested`, `event:excuse_decided`, `leave:requested`, `leave:decided`, `doc:update`, `doc:cursor` and `doc:collaborators`.
 
 ### Configuration
 

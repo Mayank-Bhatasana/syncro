@@ -3,7 +3,7 @@ import { EntryCategory } from "@prisma/client";
 import { prisma } from "../../config/db";
 import { requireAuth } from "../../middleware/auth";
 import { validateBody } from "../../middleware/validate";
-import { CreatePersonalEntrySchema } from "@syncro/shared";
+import { CreatePersonalEntrySchema, RescheduleSchema } from "@syncro/shared";
 import { isBreakCategory, repeatDayKeys, validateEntryWindow } from "../calendar-rules";
 import { dateKeyOf, timeOfDay, zonedInstant } from "../time";
 import { BREAK_CATEGORIES, findMeetingOverlaps, formatEntryDTO } from "./data";
@@ -139,6 +139,83 @@ entriesRouter.post(
     } catch (err) {
       console.error("Failed to create entry:", err);
       res.status(500).json({ error: "Failed to create entry" });
+    }
+  }
+);
+
+// PATCH /entries/:id — move one of my own breaks or activities to a new time
+entriesRouter.patch(
+  "/entries/:id",
+  validateBody(RescheduleSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const userId = req.user!.id;
+      const id = String(req.params.id);
+      const start = new Date(req.body.startTime);
+      const end = new Date(req.body.endTime);
+
+      const entry = await prisma.personalEntry.findFirst({ where: { id, userId } });
+      if (!entry) {
+        res.status(404).json({ error: "Entry not found" });
+        return;
+      }
+
+      const category = entry.category as EntryCategory;
+      const windowError = validateEntryWindow({ category, start, end, now: new Date() });
+      if (windowError) {
+        res.status(400).json({ error: windowError });
+        return;
+      }
+
+      if (isBreakCategory(category)) {
+        const meetings = await findMeetingOverlaps([userId], start, end);
+        const otherBreak = await prisma.personalEntry.findFirst({
+          where: {
+            userId,
+            id: { not: id },
+            category: { in: BREAK_CATEGORIES },
+            startTime: { lt: end },
+            endTime: { gt: start },
+          },
+        });
+
+        const details = [
+          ...meetings.map((m) => ({
+            label: `Meeting: ${m.event.title}`,
+            startTime: start.toISOString(),
+            endTime: end.toISOString(),
+          })),
+          ...(otherBreak
+            ? [
+                {
+                  label: `Already on break: ${otherBreak.title}`,
+                  startTime: start.toISOString(),
+                  endTime: end.toISOString(),
+                },
+              ]
+            : []),
+        ];
+
+        if (details.length > 0) {
+          res.status(409).json({
+            error: meetings.length
+              ? "Breaks can't overlap a meeting you're invited to. Move the break or ask to be excused."
+              : "This overlaps an existing break.",
+            details,
+          });
+          return;
+        }
+      }
+
+      const updated = await prisma.personalEntry.update({
+        where: { id },
+        data: { startTime: start, endTime: end },
+      });
+
+      res.json({ entry: formatEntryDTO(updated) });
+    } catch (err) {
+      console.error("Failed to move entry:", err);
+      res.status(500).json({ error: "Failed to move entry" });
     }
   }
 );

@@ -227,12 +227,18 @@ export async function findBreakConflicts(
 }
 
 /** Meetings this person is invited to (not excused) that overlap the interval. */
-export async function findMeetingOverlaps(userIds: string[], start: Date, end: Date) {
+export async function findMeetingOverlaps(
+  userIds: string[],
+  start: Date,
+  end: Date,
+  excludeEventId?: string
+) {
   if (userIds.length === 0) return [];
   return prisma.eventAttendee.findMany({
     where: {
       userId: { in: userIds },
       status: { not: AttendeeStatus.EXCUSED },
+      eventId: excludeEventId ? { not: excludeEventId } : undefined,
       event: { startTime: { lt: end }, endTime: { gt: start } },
     },
     select: {
@@ -247,11 +253,12 @@ export async function findMeetingOverlaps(userIds: string[], start: Date, end: D
 export async function findSoftConflictUserIds(
   userIds: string[],
   start: Date,
-  end: Date
+  end: Date,
+  excludeEventId?: string
 ): Promise<Set<string>> {
   if (userIds.length === 0) return new Set();
   const [meetings, activities] = await Promise.all([
-    findMeetingOverlaps(userIds, start, end),
+    findMeetingOverlaps(userIds, start, end, excludeEventId),
     prisma.personalEntry.findMany({
       where: {
         userId: { in: userIds },

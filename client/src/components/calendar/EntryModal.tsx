@@ -14,6 +14,7 @@ type EntryKind = "BREAK" | "ACTIVITY";
 interface EntryModalProps {
   initialType: EntryKind;
   initialDayKey: string;
+  initialTimes?: [string, string];
   onClose: () => void;
 }
 
@@ -29,7 +30,7 @@ const REPEAT_OPTIONS = [
   { value: 4, label: "Every weekday for 4 weeks" },
 ];
 
-export function EntryModal({ initialType, initialDayKey, onClose }: EntryModalProps) {
+export function EntryModal({ initialType, initialDayKey, initialTimes, onClose }: EntryModalProps) {
   const queryClient = useQueryClient();
   const addNotification = useSyncroStore((s) => s.addNotification);
 
@@ -38,7 +39,7 @@ export function EntryModal({ initialType, initialDayKey, onClose }: EntryModalPr
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
   const [dateStr, setDateStr] = useState(initialDayKey);
-  const [[startHour, endHour], setTimes] = useState<[string, string]>(DEFAULT_TIMES[initialType]);
+  const [[startHour, endHour], setTimes] = useState<[string, string]>(initialTimes ?? DEFAULT_TIMES[initialType]);
   const [repeatWeeks, setRepeatWeeks] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [clashes, setClashes] = useState<{ label: string; startTime: string; endTime: string }[]>([]);
@@ -59,7 +60,6 @@ export function EntryModal({ initialType, initialDayKey, onClose }: EntryModalPr
   const switchKind = (next: EntryKind) => {
     setKind(next);
     setCategory(next === "BREAK" ? "LUNCH" : "FOCUS");
-    setTimes(DEFAULT_TIMES[next]);
     setError(null);
     setClashes([]);
   };

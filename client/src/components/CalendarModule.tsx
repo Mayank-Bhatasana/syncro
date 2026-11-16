@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, ChevronLeft, ChevronRight, Coffee, Palmtree, Sparkles } from "lucide-react";
 import { api } from "../api/client";
 import { useSyncroStore } from "../store/useSyncroStore";
@@ -24,7 +24,12 @@ import {
   weekLabel,
 } from "./calendar/dates";
 
-type Modal = { kind: "meeting" } | { kind: "entry"; entryKind: "BREAK" | "ACTIVITY" } | { kind: "leave" } | null;
+type EntrySlot = { dayKey: string; start: string; end: string };
+type Modal =
+  | { kind: "meeting" }
+  | { kind: "entry"; entryKind: "BREAK" | "ACTIVITY"; slot?: EntrySlot }
+  | { kind: "leave" }
+  | null;
 type Selection = { kind: "meeting" | "entry" | "leave"; id: string } | null;
 
 const QUICK =
@@ -36,8 +41,14 @@ function uniqueById<T extends { id: string }>(lists: T[][]): T[] {
   return Array.from(map.values());
 }
 
+function clockOf(date: Date): string {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 export function CalendarModule() {
   const currentUser = useSyncroStore((s) => s.currentUser)!;
+  const addNotification = useSyncroStore((s) => s.addNotification);
+  const queryClient = useQueryClient();
   const canApprove = currentUser.role !== "EMPLOYEE";
 
   const today = startOfDay(new Date());
@@ -46,6 +57,37 @@ export function CalendarModule() {
   const [showWeekend, setShowWeekend] = useState(false);
   const [selection, setSelection] = useState<Selection>(null);
   const [modal, setModal] = useState<Modal>(null);
+  const [pendingMoves, setPendingMoves] = useState<Record<string, { start: string; end: string }>>({});
+
+  const moveMutation = useMutation({
+    mutationFn: async ({ item, startTime, endTime }: { item: GridItem; startTime: string; endTime: string }) => {
+      if (item.kind === "MEETING") {
+        await api.moveEvent(item.id, { startTime, endTime });
+      } else {
+        await api.moveEntry(item.id, { startTime, endTime });
+      }
+    },
+    onMutate: ({ item, startTime, endTime }) => {
+      setPendingMoves((prev) => ({ ...prev, [item.id]: { start: startTime, end: endTime } }));
+    },
+    onSettled: (_data, _error, { item }) => {
+      setPendingMoves((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      queryClient.invalidateQueries({ queryKey: ["calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["entries"] });
+      queryClient.invalidateQueries({ queryKey: ["availability"] });
+    },
+    onError: (err: unknown) => {
+      addNotification({
+        title: "Couldn't move that",
+        message: err instanceof Error ? err.message : "Please try again.",
+        type: "warning",
+      });
+    },
+  });
 
   const weekDaysAll = weekDays(monday);
   const days = showWeekend ? weekDaysAll : weekDaysAll.slice(0, 5);
@@ -85,21 +127,29 @@ export function CalendarModule() {
   const approvalCount = approvalsQuery.data?.requests.length ?? 0;
 
   const gridItems: GridItem[] = [
-    ...(weekEvents.data?.events ?? []).map((e) => ({
-      id: e.id,
-      kind: "MEETING" as const,
-      title: e.title,
-      start: new Date(e.startTime),
-      end: new Date(e.endTime),
-      hasConflict: e.myHasConflict,
-    })),
-    ...(weekEntries.data?.entries ?? []).map((en) => ({
-      id: en.id,
-      kind: en.type,
-      title: en.title,
-      start: new Date(en.startTime),
-      end: new Date(en.endTime),
-    })),
+    ...(weekEvents.data?.events ?? []).map((e) => {
+      const pending = pendingMoves[e.id];
+      return {
+        id: e.id,
+        kind: "MEETING" as const,
+        title: e.title,
+        start: new Date(pending?.start ?? e.startTime),
+        end: new Date(pending?.end ?? e.endTime),
+        hasConflict: e.myHasConflict,
+        movable: e.organizerId === currentUser.id,
+      };
+    }),
+    ...(weekEntries.data?.entries ?? []).map((en) => {
+      const pending = pendingMoves[en.id];
+      return {
+        id: en.id,
+        kind: en.type,
+        title: en.title,
+        start: new Date(pending?.start ?? en.startTime),
+        end: new Date(pending?.end ?? en.endTime),
+        movable: true,
+      };
+    }),
   ];
 
   const leaveBands: LeaveBand[] = activeLeave.map((r) => ({
@@ -153,6 +203,16 @@ export function CalendarModule() {
 
   const selectGridItem = (item: GridItem) =>
     setSelection({ kind: item.kind === "MEETING" ? "meeting" : "entry", id: item.id });
+
+  const moveGridItem = (item: GridItem, start: Date, end: Date) =>
+    moveMutation.mutate({ item, startTime: start.toISOString(), endTime: end.toISOString() });
+
+  const createFromSlot = (start: Date, end: Date) =>
+    setModal({
+      kind: "entry",
+      entryKind: "ACTIVITY",
+      slot: { dayKey: dayKey(start), start: clockOf(start), end: clockOf(end) },
+    });
 
   return (
     <div className="flex h-[calc(100vh-4rem)] min-h-0">
@@ -277,6 +337,8 @@ export function CalendarModule() {
             leaves={leaveBands}
             selectedId={selection?.id ?? null}
             onSelect={selectGridItem}
+            onMove={moveGridItem}
+            onCreate={createFromSlot}
           />
         ) : (
           <LeavePanel
@@ -322,9 +384,10 @@ export function CalendarModule() {
       )}
       {modal?.kind === "entry" && (
         <EntryModal
-          key={modal.entryKind}
+          key={`${modal.entryKind}-${modal.slot?.start ?? "default"}`}
           initialType={modal.entryKind}
-          initialDayKey={defaultDayKey}
+          initialDayKey={modal.slot?.dayKey ?? defaultDayKey}
+          initialTimes={modal.slot ? [modal.slot.start, modal.slot.end] : undefined}
           onClose={() => setModal(null)}
         />
       )}

@@ -7,6 +7,7 @@ import { api } from "../api/client";
 import { useSyncroStore } from "../store/useSyncroStore";
 import { useSocket } from "../socket/SocketProvider";
 import { DocAccessLevel } from "@syncro/shared";
+import { LiveTextArea, RemoteCaret, cursorColor } from "./docs/LiveTextArea";
 import {
   FileText,
   Plus,
@@ -37,6 +38,17 @@ function base64ToUint8(base64: string): Uint8Array {
   return bytes;
 }
 
+/** Turns a Yjs relative position from another editor back into an index in our copy. */
+function resolveIndex(ydoc: Y.Doc | null, relative: unknown): number | null {
+  if (!ydoc || !relative) return null;
+  try {
+    const pos = Y.createRelativePositionFromJSON(relative);
+    return Y.createAbsolutePositionFromRelativePosition(pos, ydoc)?.index ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export function DocsModule() {
   const socket = useSocket();
   const queryClient = useQueryClient();
@@ -59,6 +71,9 @@ export function DocsModule() {
     { id: string; name: string; role: string }[]
   >([]);
   const [lastSavedBy, setLastSavedBy] = useState<string | null>(null);
+  const [remoteCursors, setRemoteCursors] = useState<
+    Record<string, { id: string; name: string; anchor: unknown; head: unknown }>
+  >({});
 
   const { data: docsData } = useQuery({
     queryKey: ["documents"],
@@ -139,20 +154,64 @@ export function DocsModule() {
     }) => {
       if (payload.documentId === activeDocumentId) {
         setCollaborators(payload.collaborators);
+        const present = new Set(payload.collaborators.map((c) => c.id));
+        setRemoteCursors((prev) =>
+          Object.fromEntries(Object.entries(prev).filter(([id]) => present.has(id)))
+        );
       }
+    };
+
+    const handleRemoteCursor = (payload: {
+      documentId: string;
+      userId: string;
+      userName: string;
+      anchor: unknown;
+      head: unknown;
+    }) => {
+      if (payload.documentId !== activeDocumentId) return;
+      setRemoteCursors((prev) => ({
+        ...prev,
+        [payload.userId]: {
+          id: payload.userId,
+          name: payload.userName,
+          anchor: payload.anchor,
+          head: payload.head,
+        },
+      }));
     };
 
     socket.on("doc:update", handleRemoteUpdate);
     socket.on("doc:collaborators", handleCollaborators);
+    socket.on("doc:cursor", handleRemoteCursor);
 
     return () => {
       socket.emit("doc:leave", { documentId: activeDocumentId });
       socket.off("doc:update", handleRemoteUpdate);
       socket.off("doc:collaborators", handleCollaborators);
+      socket.off("doc:cursor", handleRemoteCursor);
       ytext.unobserve(updateTextFromYDoc);
       ydoc.destroy();
+      setRemoteCursors({});
     };
   }, [socket, activeDocumentId]);
+
+  const liveCursors: RemoteCaret[] = Object.values(remoteCursors).flatMap((c) => {
+    const start = resolveIndex(ydocRef.current, c.anchor);
+    const head = resolveIndex(ydocRef.current, c.head);
+    if (start === null || head === null) return [];
+    return [{ id: c.id, name: c.name.split(" ")[0], color: cursorColor(c.id), start, end: head, head }];
+  });
+
+  const sendCursor = (start: number, end: number) => {
+    const ydoc = ydocRef.current;
+    if (!ydoc || !socket || !activeDocumentId) return;
+    const ytext = ydoc.getText("content");
+    socket.emit("doc:cursor", {
+      documentId: activeDocumentId,
+      anchor: Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, start)),
+      head: Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(ytext, end)),
+    });
+  };
 
   const applyLocalTextChange = (nextValue: string) => {
     const ydoc = ydocRef.current;
@@ -174,11 +233,29 @@ export function DocsModule() {
       }
     };
 
+    // Only replace the part of the text that actually changed, so other people's
+    // cursors and edits in the untouched text keep their place.
     ydoc.on("update", onUpdate);
     ydoc.transact(() => {
       const ytext = ydoc.getText("content");
-      ytext.delete(0, ytext.length);
-      ytext.insert(0, nextValue);
+      const current = ytext.toString();
+      const maxPrefix = Math.min(current.length, nextValue.length);
+      let prefix = 0;
+      while (prefix < maxPrefix && current[prefix] === nextValue[prefix]) prefix++;
+
+      let suffix = 0;
+      while (
+        suffix < current.length - prefix &&
+        suffix < nextValue.length - prefix &&
+        current[current.length - 1 - suffix] === nextValue[nextValue.length - 1 - suffix]
+      ) {
+        suffix++;
+      }
+
+      const deleteLength = current.length - prefix - suffix;
+      const insertText = nextValue.slice(prefix, nextValue.length - suffix);
+      if (deleteLength > 0) ytext.delete(prefix, deleteLength);
+      if (insertText) ytext.insert(prefix, insertText);
     }, "local");
     ydoc.off("update", onUpdate);
 
@@ -347,10 +424,18 @@ export function DocsModule() {
                 {/* Active Collaborators */}
                 <div className="flex items-center gap-2 text-xs font-bold bg-paper border-2 border-ink px-3 py-1.5 rounded-xl">
                   <Users className="w-3.5 h-3.5" />
-                  <span>
-                    In Doc:{" "}
-                    {collaborators.map((c) => c.name.split(" ")[0]).join(", ") ||
-                      "You"}
+                  <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                    In Doc:
+                    {collaborators.length === 0 && <span>You</span>}
+                    {collaborators.map((c) => (
+                      <span key={c.id} className="inline-flex items-center gap-1">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full border border-ink"
+                          style={{ backgroundColor: cursorColor(c.id) }}
+                        />
+                        {c.name.split(" ")[0]}
+                      </span>
+                    ))}
                   </span>
                 </div>
 
@@ -424,15 +509,12 @@ export function DocsModule() {
             {/* Collaborative Editor Area */}
             <div className="flex-1 p-6 overflow-y-auto">
               <div className="max-w-4xl mx-auto h-full flex flex-col">
-                <textarea
+                <LiveTextArea
                   readOnly={!isEditable}
                   value={content}
-                  onChange={(e) => applyLocalTextChange(e.target.value)}
-                  className={`w-full flex-1 min-h-[420px] border-[3px] rounded-3xl p-6 font-mono text-sm leading-relaxed outline-none transition-all duration-150 ${
-                    isEditable
-                      ? "bg-white border-ink shadow-pop focus:shadow-pop-lg focus:-translate-x-0.5 focus:-translate-y-0.5"
-                      : "bg-sun/20 border-ink/40 text-ink/70 cursor-not-allowed"
-                  }`}
+                  remoteCursors={liveCursors}
+                  onChange={applyLocalTextChange}
+                  onSelectionChange={sendCursor}
                 />
               </div>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   DAY_END_HOUR,
   DAY_START_HOUR,
@@ -20,6 +20,7 @@ export interface GridItem {
   start: Date;
   end: Date;
   hasConflict?: boolean;
+  movable?: boolean;
 }
 
 export interface LeaveBand {
@@ -35,16 +36,45 @@ interface WeekGridProps {
   leaves: LeaveBand[];
   selectedId: string | null;
   onSelect: (item: GridItem) => void;
+  onMove?: (item: GridItem, start: Date, end: Date) => void;
+  onCreate?: (start: Date, end: Date) => void;
 }
 
 const GRID_START = DAY_START_HOUR * 60;
 const GRID_END = DAY_END_HOUR * 60;
 const GRID_HEIGHT = (DAY_END_HOUR - DAY_START_HOUR) * HOUR_PX;
+const SNAP_MINUTES = 15;
+const DRAG_THRESHOLD_PX = 4;
+const CLICK_AFTER_DRAG_MS = 300;
 
 const BREAK_STRIPES = {
   backgroundImage:
     "repeating-linear-gradient(135deg, rgba(255,216,77,0.9) 0 8px, #FFF6E6 8px 16px)",
 };
+
+type Drag =
+  | {
+      kind: "move";
+      item: GridItem;
+      column: HTMLElement;
+      originX: number;
+      originY: number;
+      moved: boolean;
+      dayIndex: number;
+      startMin: number;
+      durationMin: number;
+      offsetMin: number;
+    }
+  | {
+      kind: "create";
+      column: HTMLElement;
+      originX: number;
+      originY: number;
+      moved: boolean;
+      dayIndex: number;
+      anchorMin: number;
+      currentMin: number;
+    };
 
 function hourLabel(hour: number): string {
   const suffix = hour >= 12 ? "PM" : "AM";
@@ -52,12 +82,192 @@ function hourLabel(hour: number): string {
   return `${h} ${suffix}`;
 }
 
-export function WeekGrid({ days, items, leaves, selectedId, onSelect }: WeekGridProps) {
+function snapMinute(min: number): number {
+  return Math.round(min / SNAP_MINUTES) * SNAP_MINUTES;
+}
+
+function clampMinute(min: number, low: number, high: number): number {
+  return Math.min(Math.max(min, low), high);
+}
+
+/** Minute of the day under a pointer position, measured against a day column. */
+function minuteAt(column: HTMLElement, clientY: number): number {
+  const rect = column.getBoundingClientRect();
+  return GRID_START + ((clientY - rect.top) / HOUR_PX) * 60;
+}
+
+/** A local Date on the given day at the given minute of the day. */
+function atMinutes(day: Date, minutes: number): Date {
+  const d = new Date(day);
+  d.setHours(0, 0, 0, 0);
+  d.setMinutes(minutes);
+  return d;
+}
+
+function columnAt(x: number, y: number): HTMLElement | null {
+  const el = document.elementFromPoint(x, y) as HTMLElement | null;
+  return el?.closest<HTMLElement>("[data-day-index]") ?? null;
+}
+
+export function WeekGrid({
+  days,
+  items,
+  leaves,
+  selectedId,
+  onSelect,
+  onMove,
+  onCreate,
+}: WeekGridProps) {
   const now = new Date();
   const columns = `52px repeat(${days.length}, minmax(0, 1fr))`;
 
+  const [drag, setDrag] = useState<Drag | null>(null);
+  const dragRef = useRef<Drag | null>(null);
+  const dragEndedAt = useRef(0);
+  const latest = useRef({ days, onMove, onCreate });
+  latest.current = { days, onMove, onCreate };
+
+  const updateDrag = (next: Drag | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  };
+
+  const dragging = drag !== null;
+  useEffect(() => {
+    if (!dragging) return;
+
+    const handleMove = (e: PointerEvent) => {
+      const d = dragRef.current;
+      if (!d) return;
+      if (!d.moved && Math.hypot(e.clientX - d.originX, e.clientY - d.originY) < DRAG_THRESHOLD_PX) {
+        return;
+      }
+
+      if (d.kind === "move") {
+        const column = columnAt(e.clientX, e.clientY) ?? d.column;
+        const startMin = clampMinute(
+          snapMinute(minuteAt(column, e.clientY) - d.offsetMin),
+          GRID_START,
+          GRID_END - d.durationMin
+        );
+        updateDrag({
+          ...d,
+          column,
+          dayIndex: Number(column.dataset.dayIndex ?? d.dayIndex),
+          startMin,
+          moved: true,
+        });
+      } else {
+        const currentMin = clampMinute(snapMinute(minuteAt(d.column, e.clientY)), GRID_START, GRID_END);
+        updateDrag({ ...d, currentMin, moved: true });
+      }
+    };
+
+    const handleUp = () => {
+      const d = dragRef.current;
+      updateDrag(null);
+      if (!d || !d.moved) return;
+      dragEndedAt.current = Date.now();
+
+      const { days: currentDays, onMove: move, onCreate: create } = latest.current;
+      if (d.kind === "move") {
+        const start = atMinutes(currentDays[d.dayIndex], d.startMin);
+        if (start.getTime() !== d.item.start.getTime()) {
+          const end = new Date(start.getTime() + d.durationMin * 60000);
+          move?.(d.item, start, end);
+        }
+      } else {
+        const low = Math.min(d.anchorMin, d.currentMin);
+        const high = Math.max(d.anchorMin, d.currentMin);
+        if (high - low >= SNAP_MINUTES) {
+          create?.(
+            atMinutes(currentDays[d.dayIndex], low),
+            atMinutes(currentDays[d.dayIndex], high)
+          );
+        }
+      }
+    };
+
+    const handleCancel = () => updateDrag(null);
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+    window.addEventListener("pointercancel", handleCancel);
+    return () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      window.removeEventListener("pointercancel", handleCancel);
+    };
+  }, [dragging]);
+
+  const startMoveDrag = (e: React.PointerEvent<HTMLElement>, item: GridItem) => {
+    if (e.button !== 0 || !item.movable || item.start.getTime() <= Date.now()) return;
+    const column = e.currentTarget.closest<HTMLElement>("[data-day-index]");
+    if (!column) return;
+    const startMin = minutesOfDay(item.start);
+    updateDrag({
+      kind: "move",
+      item,
+      column,
+      originX: e.clientX,
+      originY: e.clientY,
+      moved: false,
+      dayIndex: Number(column.dataset.dayIndex),
+      startMin,
+      durationMin: (item.end.getTime() - item.start.getTime()) / 60000,
+      offsetMin: minuteAt(column, e.clientY) - startMin,
+    });
+  };
+
+  const startCreateDrag = (e: React.PointerEvent<HTMLDivElement>, dayIndex: number) => {
+    if (!onCreate || e.target !== e.currentTarget || e.button !== 0) return;
+    const column = e.currentTarget;
+    const anchorMin = clampMinute(snapMinute(minuteAt(column, e.clientY)), GRID_START, GRID_END);
+    if (atMinutes(days[dayIndex], anchorMin).getTime() <= Date.now()) return;
+    updateDrag({
+      kind: "create",
+      column,
+      originX: e.clientX,
+      originY: e.clientY,
+      moved: false,
+      dayIndex,
+      anchorMin,
+      currentMin: anchorMin,
+    });
+  };
+
+  const selectUnlessDragged = (item: GridItem) => {
+    if (Date.now() - dragEndedAt.current < CLICK_AFTER_DRAG_MS) return;
+    onSelect(item);
+  };
+
+  // While a block is being moved, show it where it would land
+  const shownItems: GridItem[] =
+    drag?.kind === "move" && drag.moved
+      ? items.map((item) => {
+          if (item.id !== drag.item.id) return item;
+          const start = atMinutes(days[drag.dayIndex], drag.startMin);
+          return { ...item, start, end: new Date(start.getTime() + drag.durationMin * 60000) };
+        })
+      : items;
+
+  const createPreview =
+    drag?.kind === "create" && drag.moved
+      ? (() => {
+          const low = Math.min(drag.anchorMin, drag.currentMin);
+          const high = Math.max(drag.anchorMin, drag.currentMin);
+          return {
+            dayIndex: drag.dayIndex,
+            startMin: low,
+            endMin: high,
+            start: atMinutes(days[drag.dayIndex], low),
+            end: atMinutes(days[drag.dayIndex], high),
+          };
+        })()
+      : null;
+
   return (
-    <div className="flex-1 min-h-0 flex flex-col bg-white overflow-hidden">
+    <div className="flex-1 min-h-0 flex flex-col bg-white overflow-hidden select-none">
       <div className="grid border-b-[3px] border-ink bg-paper" style={{ gridTemplateColumns: columns }}>
         <div />
         {days.map((day) => {
@@ -122,13 +332,19 @@ export function WeekGrid({ days, items, leaves, selectedId, onSelect }: WeekGrid
             ))}
           </div>
 
-          {days.map((day) => (
+          {days.map((day, index) => (
             <DayColumn
               key={dayKey(day)}
               day={day}
-              items={items}
+              dayIndex={index}
+              items={shownItems}
               selectedId={selectedId}
-              onSelect={onSelect}
+              movingId={drag?.kind === "move" && drag.moved ? drag.item.id : null}
+              onSelect={selectUnlessDragged}
+              onItemPointerDown={startMoveDrag}
+              onBackgroundPointerDown={startCreateDrag}
+              createPreview={createPreview?.dayIndex === index ? createPreview : null}
+              canCreate={Boolean(onCreate)}
               showNow={isSameDay(day, now)}
               now={now}
             />
@@ -141,16 +357,28 @@ export function WeekGrid({ days, items, leaves, selectedId, onSelect }: WeekGrid
 
 function DayColumn({
   day,
+  dayIndex,
   items,
   selectedId,
+  movingId,
   onSelect,
+  onItemPointerDown,
+  onBackgroundPointerDown,
+  createPreview,
+  canCreate,
   showNow,
   now,
 }: {
   day: Date;
+  dayIndex: number;
   items: GridItem[];
   selectedId: string | null;
+  movingId: string | null;
   onSelect: (item: GridItem) => void;
+  onItemPointerDown: (e: React.PointerEvent<HTMLElement>, item: GridItem) => void;
+  onBackgroundPointerDown: (e: React.PointerEvent<HTMLDivElement>, dayIndex: number) => void;
+  createPreview: { startMin: number; endMin: number; start: Date; end: Date } | null;
+  canCreate: boolean;
   showNow: boolean;
   now: Date;
 }) {
@@ -171,12 +399,14 @@ function DayColumn({
 
   return (
     <div
-      className="relative border-l-2 border-ink/10"
+      data-day-index={dayIndex}
+      className={`relative border-l-2 border-ink/10 ${canCreate ? "cursor-crosshair" : ""}`}
       style={{
         height: GRID_HEIGHT,
         backgroundColor: isWeekendDate(day) ? "rgba(255,246,230,0.6)" : undefined,
         backgroundImage: `repeating-linear-gradient(to bottom, rgba(30,27,46,0.10) 0 1px, transparent 1px ${HOUR_PX}px)`,
       }}
+      onPointerDown={(e) => onBackgroundPointerDown(e, dayIndex)}
     >
       {placed.map(({ item, startMin, endMin }) => {
         const info = lanes[item.id] ?? { lane: 0, lanes: 1 };
@@ -184,6 +414,8 @@ function DayColumn({
         const height = Math.max(((endMin - startMin) / 60) * HOUR_PX - 3, 26);
         const width = 100 / info.lanes;
         const selected = selectedId === item.id;
+        const moving = movingId === item.id;
+        const movable = Boolean(item.movable) && item.start.getTime() > now.getTime();
 
         const styleClass =
           item.kind === "BREAK"
@@ -198,9 +430,12 @@ function DayColumn({
           <button
             key={item.id}
             type="button"
+            onPointerDown={(e) => onItemPointerDown(e, item)}
             onClick={() => onSelect(item)}
-            className={`absolute overflow-hidden rounded-xl border-2 border-ink px-1.5 py-1 text-left transition-all duration-150 hover:-translate-y-px hover:shadow-pop-sm ${styleClass} ${
-              selected ? "shadow-pop -translate-x-px -translate-y-px z-10" : "shadow-pop-sm"
+            className={`absolute overflow-hidden rounded-xl border-2 border-ink px-1.5 py-1 text-left touch-none transition-all duration-150 hover:-translate-y-px hover:shadow-pop-sm ${styleClass} ${
+              movable ? "cursor-grab active:cursor-grabbing" : ""
+            } ${
+              selected || moving ? "shadow-pop -translate-x-px -translate-y-px z-10" : "shadow-pop-sm"
             }`}
             style={{
               top,
@@ -221,6 +456,20 @@ function DayColumn({
           </button>
         );
       })}
+
+      {createPreview && (
+        <div
+          className="absolute left-1 right-1 z-10 rounded-xl border-2 border-dashed border-ink bg-mint/50 pointer-events-none"
+          style={{
+            top: ((createPreview.startMin - GRID_START) / 60) * HOUR_PX,
+            height: Math.max(((createPreview.endMin - createPreview.startMin) / 60) * HOUR_PX, 14),
+          }}
+        >
+          <span className="block px-1.5 py-0.5 text-[10px] font-extrabold bg-white/80 rounded w-fit">
+            {formatClock(createPreview.start)} – {formatClock(createPreview.end)}
+          </span>
+        </div>
+      )}
 
       {showNow && minutesOfDay(now) >= GRID_START && minutesOfDay(now) <= GRID_END && (
         <div

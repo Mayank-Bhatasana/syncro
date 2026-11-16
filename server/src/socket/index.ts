@@ -360,6 +360,28 @@ export function initSocketServer(httpServer: HttpServer): SocketServer {
       }
     );
 
+    // Live cursors: relay a collaborator's selection to the rest of the document room.
+    // Positions are Yjs relative positions, so they stay correct while others type.
+    // Only sockets already in the room (i.e. authorized in doc:join) can send them.
+    socket.on(
+      "doc:cursor",
+      (payload: { documentId?: string; anchor?: unknown; head?: unknown }) => {
+        const documentId = payload?.documentId;
+        if (typeof documentId !== "string" || !socket.rooms.has(`doc:${documentId}`)) return;
+
+        const size = JSON.stringify([payload.anchor, payload.head]).length;
+        if (size > 2000) return;
+
+        socket.to(`doc:${documentId}`).emit("doc:cursor", {
+          documentId,
+          userId: user.id,
+          userName: user.name,
+          anchor: payload.anchor ?? null,
+          head: payload.head ?? null,
+        });
+      }
+    );
+
     socket.on("doc:leave", async ({ documentId }: { documentId: string }) => {
       socket.leave(`doc:${documentId}`);
       const socketsInDoc = await io.in(`doc:${documentId}`).fetchSockets();
@@ -372,6 +394,23 @@ export function initSocketServer(httpServer: HttpServer): SocketServer {
         documentId,
         collaborators,
       });
+    });
+
+    // Drop this user from the collaborator list of any document they were viewing
+    socket.on("disconnecting", async () => {
+      for (const room of socket.rooms) {
+        if (!room.startsWith("doc:")) continue;
+        const documentId = room.slice("doc:".length);
+        const remaining = (await io.in(room).fetchSockets()).filter((s) => s.id !== socket.id);
+        io.to(room).emit("doc:collaborators", {
+          documentId,
+          collaborators: remaining.map((s) => ({
+            id: (s.data.user as AuthUser).id,
+            name: (s.data.user as AuthUser).name,
+            role: (s.data.user as AuthUser).role,
+          })),
+        });
+      }
     });
 
     socket.on("disconnect", async () => {

@@ -112,6 +112,17 @@ export const CreatePersonalEntrySchema = z
   });
 export type CreatePersonalEntryInput = z.infer<typeof CreatePersonalEntrySchema>;
 
+export const RescheduleSchema = z
+  .object({
+    startTime: z.string().datetime({ offset: true, message: "Valid ISO start time required" }),
+    endTime: z.string().datetime({ offset: true, message: "Valid ISO end time required" }),
+  })
+  .refine((data) => new Date(data.endTime) > new Date(data.startTime), {
+    message: "End time must be after start time",
+    path: ["endTime"],
+  });
+export type RescheduleInput = z.infer<typeof RescheduleSchema>;
+
 const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use the YYYY-MM-DD format");
 
 export const CreateLeaveRequestSchema = z

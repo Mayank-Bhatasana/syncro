@@ -14,6 +14,7 @@ import {
   CreateConversationInput,
   CreateEventInput,
   CreatePersonalEntryInput,
+  RescheduleInput,
   CreateLeaveRequestInput,
   LeaveDecisionInput,
   RequestExcuseInput,
@@ -168,6 +169,16 @@ export const api = {
   createEntry: (input: CreatePersonalEntryInput) =>
     apiFetch<{ entries: PersonalEntryDTO[] }>("/api/entries", {
       method: "POST",
+      body: JSON.stringify(input),
+    }),
+  moveEntry: (id: string, input: RescheduleInput) =>
+    apiFetch<{ entry: PersonalEntryDTO }>(`/api/entries/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    }),
+  moveEvent: (eventId: string, input: RescheduleInput) =>
+    apiFetch<{ event: CalendarEventDTO }>(`/api/events/${eventId}/time`, {
+      method: "PATCH",
       body: JSON.stringify(input),
     }),
   deleteEntry: (id: string) =>

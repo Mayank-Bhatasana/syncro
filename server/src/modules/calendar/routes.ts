@@ -9,6 +9,7 @@ import {
   DecideExcuseSchema,
   BusyBlockDTO,
   ConflictDetailDTO,
+  RescheduleSchema,
 } from "@syncro/shared";
 import { canInviteTargetScope, canDecideExcuse } from "../permissions";
 import {
@@ -310,6 +311,122 @@ calendarRouter.post(
     } catch (err) {
       console.error("Failed to create event:", err);
       res.status(500).json({ error: "Failed to create event" });
+    }
+  }
+);
+
+// PATCH /events/:id/time — Organizer moves a meeting. Same rules as booking: leave, breaks and overlaps are rechecked.
+calendarRouter.patch(
+  "/events/:id/time",
+  validateBody(RescheduleSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const organizer = req.user!;
+      const eventId = String(req.params.id);
+      const start = new Date(req.body.startTime);
+      const end = new Date(req.body.endTime);
+
+      const event = await prisma.event.findUnique({
+        where: { id: eventId },
+        include: { attendees: true },
+      });
+
+      if (!event) {
+        res.status(404).json({ error: "Event not found" });
+        return;
+      }
+
+      if (event.organizerId !== organizer.id) {
+        res.status(403).json({ error: "Forbidden: Only the organizer can move this meeting" });
+        return;
+      }
+
+      const now = Date.now();
+      if (event.startTime.getTime() <= now) {
+        res.status(400).json({ error: "This meeting has already started, so it can't be moved." });
+        return;
+      }
+      if (start.getTime() < now - PAST_GRACE_MS) {
+        res.status(400).json({ error: "Meetings can't be moved into the past." });
+        return;
+      }
+
+      const attendeeIds = event.attendees.map((a) => a.userId);
+
+      const { first, last } = dayKeysTouchedBy(start, end);
+      const leaveRows = (await loadActiveLeave(attendeeIds, first, last)).filter((row) =>
+        leaveCoversInterval(row, start, end)
+      );
+      if (leaveRows.length > 0) {
+        const names = Array.from(new Set(leaveRows.map((row) => row.user.name)));
+        res.status(409).json({
+          error: `${names.join(", ")} ${names.length === 1 ? "is" : "are"} on leave at that time. Pick another time.`,
+          details: leaveRows.map((row) => ({
+            userId: row.userId,
+            name: row.user.name,
+            reason: "LEAVE" as const,
+            label: leaveTypeLabel(row.type),
+            startTime: dayStartOf(dbDateToKey(row.startDate)).toISOString(),
+            endTime: dayEndOf(dbDateToKey(row.endDate)).toISOString(),
+          })),
+        });
+        return;
+      }
+
+      const breakConflicts = await findBreakConflicts(attendeeIds, start, end);
+      if (breakConflicts.length > 0) {
+        const names = Array.from(new Set(breakConflicts.map((c) => c.name)));
+        const preview = names.slice(0, 3).join(", ");
+        const more = names.length > 3 ? ` and ${names.length - 3} more` : "";
+        res.status(409).json({
+          error: `Can't move this meeting: ${preview}${more} ${
+            names.length === 1 ? "is" : "are"
+          } on break at that time. Pick another time.`,
+          details: breakConflicts,
+        });
+        return;
+      }
+
+      const conflictingUserIds = await findSoftConflictUserIds(attendeeIds, start, end, eventId);
+
+      await prisma.$transaction([
+        prisma.event.update({
+          where: { id: eventId },
+          data: { startTime: start, endTime: end },
+        }),
+        ...event.attendees.map((a) =>
+          prisma.eventAttendee.update({
+            where: { eventId_userId: { eventId, userId: a.userId } },
+            data: { hasConflict: conflictingUserIds.has(a.userId) },
+          })
+        ),
+      ]);
+
+      const updatedEvent = await prisma.event.findUnique({
+        where: { id: eventId },
+        include: eventInclude,
+      });
+      const updatedLeaveRows = await leaveRowsForEvents([updatedEvent!]);
+
+      try {
+        const io = getIO();
+        for (const uid of attendeeIds) {
+          if (uid === organizer.id) continue;
+          io.to(`user:${uid}`).emit("event:updated", {
+            eventId,
+            eventTitle: updatedEvent!.title,
+            organizerName: organizer.name,
+            event: formatEventDTO(updatedEvent!, uid, updatedLeaveRows),
+          });
+        }
+      } catch {
+        // Ignore if socket server not initialized
+      }
+
+      res.json({ event: formatEventDTO(updatedEvent!, organizer.id, updatedLeaveRows) });
+    } catch (err) {
+      console.error("Failed to move event:", err);
+      res.status(500).json({ error: "Failed to move event" });
     }
   }
 );

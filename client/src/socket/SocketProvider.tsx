@@ -104,6 +104,19 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
     );
 
     s.on(
+      "event:updated",
+      (payload: { eventTitle: string; organizerName: string }) => {
+        queryClient.invalidateQueries({ queryKey: ["calendar"] });
+        queryClient.invalidateQueries({ queryKey: ["availability"] });
+        addNotification({
+          title: "🗓️ Meeting moved",
+          message: `${payload.organizerName} moved "${payload.eventTitle}"`,
+          type: "info",
+        });
+      }
+    );
+
+    s.on(
       "event:excuse_requested",
       (payload: {
         eventId: string;
