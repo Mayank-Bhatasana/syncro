@@ -10,6 +10,7 @@
   "scripts": {
     "dev:server": "npm --workspace=server run dev",
     "dev:client": "npm --workspace=client run dev",
+    "start": "bash scripts/start.sh",
     "build:shared": "npm --workspace=shared run build",
     "db:migrate": "npm --workspace=server run db:migrate",
     "db:seed": "npm --workspace=server run db:seed",
